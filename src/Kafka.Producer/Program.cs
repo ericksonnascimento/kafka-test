@@ -3,6 +3,8 @@ using System.Threading.Tasks;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using Kafka.Core.Constants;
+using Kafka.Core.Model;
+using Newtonsoft.Json;
 
 namespace Kafka.Producer
 {
@@ -52,8 +54,7 @@ namespace Kafka.Producer
 
             var config = new ProducerConfig
             {
-                BootstrapServers = Constants.BootstrapServers,
-                MessageTimeoutMs = 10000
+                BootstrapServers = Constants.BootstrapServers
             };
 
             using (var producer = new ProducerBuilder<Null, string>(config)
@@ -62,12 +63,11 @@ namespace Kafka.Producer
             {
                 for (int i = 0; i < quantity; i++)
                 {
-                    var message = $"Mensagem de teste: {rnd.Next()}";
-
+                    var mailMessage = new EmailMessage { Message = $"Mensagem de teste: {rnd.Next()}", Timestamp = DateTime.Now.AddSeconds(10) };
 
                     var result = await producer.ProduceAsync(
                                       Constants.TopicName,
-                                      new Message<Null, string> { Value = message }
+                                      new Message<Null, string> { Value = JsonConvert.SerializeObject(mailMessage) }
                                   );
 
                     //var result = await producer.ProduceAsync
@@ -75,11 +75,11 @@ namespace Kafka.Producer
                     //    new Message<Null, string> { Value = message });
 
 
-                    _logger.Information($"Mensagem: {message} - Status: {result.Status.ToString()} / Topic/Partition: {result.TopicPartition.Topic}/{result.TopicPartition.Partition} ");
+                    _logger.Information($"Mensagem: {mailMessage.ToString()} - Status: {result.Status.ToString()} / Topic/Partition: {result.TopicPartition.Topic}/{result.TopicPartition.Partition} ");
                 }
 
                 producer.Flush(TimeSpan.FromSeconds(6));
-                _logger.Information("Mensagens produzidas.");
+                _logger.Information($" {quantity} mensagens produzidas.");
             }
         }
     }

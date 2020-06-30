@@ -5,6 +5,8 @@ using System.Threading.Tasks;
 using Confluent.Kafka;
 using Kafka.Core.Constants;
 using Kafka.Core.Exceptions;
+using Kafka.Core.Model;
+using Newtonsoft.Json;
 
 namespace Kafka.Consumer
 {
@@ -53,11 +55,9 @@ namespace Kafka.Consumer
                         while (true)
                         {
                             var commitMessage = true;
-
                             var cr = consumer.Consume(cts.Token);
 
-                            
-                            var message = cr.Message.Value;
+                            var message = JsonConvert.DeserializeObject<EmailMessage>(cr.Message.Value);
 
                             var topicPartitions = new List<TopicPartition>()
                                     {
@@ -66,32 +66,49 @@ namespace Kafka.Consumer
 
                             try
                             {
-                                _logger.Information($"===========================================================");
+                                var now = DateTime.Now;
                                 
+                                _logger.Information($"===========================================================");
+                                _logger.Information($"Hora atual: {now}");
+
+                                if (DateTime.Compare(now, message.Timestamp) == -1)
+                                {
+                                    var waitTime = ((TimeSpan)(message.Timestamp - now)).TotalMilliseconds;
+
+                                    _logger.Warning($"Hora que deve processar: {message.Timestamp}. Esperar: {waitTime} ms");
+
+                                    consumer.Pause(topicPartitions);
+
+                                    await Task.Delay(TimeSpan.FromMilliseconds(waitTime));
+
+                                    consumer.Resume(topicPartitions);
+
+                                    //commitMessage = await SendMessageToRetryTopic(message);
+                                }
+
                                 await ProcessMessage(message);
-                                _logger.Information($"Mensagem lida: {message}. Topic/Partition: {cr.TopicPartition.Topic} / {cr.TopicPartition.Partition}");
                             }
                             catch (MyKafkaException kex)
                             {
 
                                 _logger.Error($"Erro interno: {kex.Message}");
                                 _logger.Information("Enviando para retry topic.");
-                                commitMessage = await SendMessageToRetryTopic(message);
+                                commitMessage = await SendMessageToRetryTopic(message, true);
                             }
                             finally
                             {
                                 if (commitMessage)
                                 {
                                     consumer.StoreOffset(cr);
-                                    _logger.Information("Mensagem commitada.");
+                                    _logger.Information($"Mensagem '{message.Id}' commitada.");
 
-                                    consumer.Pause(topicPartitions);
-                                    _logger.Information($"Consumer paused. {cr.TopicPartition.Topic} / {cr.TopicPartition.Partition}");
+                                    //consumer.Pause(topicPartitions);
+                                    //_logger.Information($"Consumer paused. {cr.TopicPartition.Topic} / {cr.TopicPartition.Partition}");
 
-                                    await Task.Delay(TimeSpan.FromSeconds(10));
+                                    //await Task.Delay(TimeSpan.FromSeconds(10));
 
-                                    consumer.Resume(topicPartitions);
-                                    _logger.Information($"Consumer resumed. {cr.TopicPartition.Topic} / {cr.TopicPartition.Partition}");
+                                    //consumer.Resume(topicPartitions);
+                                    //_logger.Information($"Consumer resumed. {cr.TopicPartition.Topic} / {cr.TopicPartition.Partition}");
 
                                 }
                             }
@@ -110,19 +127,22 @@ namespace Kafka.Consumer
             }
 
         }
-        private static async Task ProcessMessage(string message)
+        private static async Task ProcessMessage(EmailMessage message)
         {
             var rnd = new Random();
 
-            var throwException = rnd.Next(1, 5) == 0;
+            var throwException = rnd.Next(1, 6) == 2;
+            //var throwException = rnd.Next(1, 6) % 2 == 0;
+
+            _logger.Information($"Mensagem : {message.ToString()}");
 
             if (throwException)
             {
-                throw new MyKafkaException($"Simulando uma exceção> Mensagem que estava sendo processada: {message}");
+                throw new MyKafkaException($"Simulando uma exceção> Mensagem que estava sendo processada: {message.ToString()}");
             }
         }
 
-        private static async Task<bool> SendMessageToRetryTopic(string message)
+        private static async Task<bool> SendMessageToRetryTopic(EmailMessage message, bool addTime = false)
         {
             try
             {
@@ -133,9 +153,15 @@ namespace Kafka.Consumer
 
                 using (var producer = new ProducerBuilder<Null, string>(config).Build())
                 {
+                    if (addTime)
+                    {
+                        message.Timestamp = message.Timestamp.AddSeconds(20);
+                        message.Attempts += 1;
+                    }
+
                     var result = await producer.ProduceAsync(
-                                      Constants.RetryTopicName,
-                                      new Message<Null, string> { Value = message }
+                                      Constants.TopicName,
+                                      new Message<Null, string> { Value = JsonConvert.SerializeObject(message) }
                                   );
 
                     return result.Status == PersistenceStatus.Persisted;
@@ -143,7 +169,7 @@ namespace Kafka.Consumer
             }
             catch (Exception ex)
             {
-                _logger.Error($"Erro ao realizar o retry. \nMensagem : {message} \nErro:{ex.Message}");
+                _logger.Error($"Erro ao realizar o retry. \nMensagem : {message.ToString()} \nErro:{ex.Message}");
             }
 
             return false;
